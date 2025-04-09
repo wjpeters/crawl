@@ -1,4 +1,5 @@
 import csv
+import os
 
 from models.venue import BlogPost
 
@@ -31,13 +32,14 @@ def is_complete_post(post: dict, required_keys: list) -> bool:
     return all(key in post and post[key] for key in required_keys)
 
 
-def save_posts_to_csv(posts: list, filename: str):
+def save_posts_to_csv(posts: list, filename: str, append: bool = False):
     """
     Save a list of blog posts to a CSV file.
     
     Args:
         posts (list): List of blog post dictionaries.
         filename (str): The name of the file to save to.
+        append (bool): Whether to append to an existing file (True) or overwrite (False).
     """
     if not posts:
         print("No posts to save.")
@@ -45,9 +47,19 @@ def save_posts_to_csv(posts: list, filename: str):
 
     # Use field names from the BlogPost model
     fieldnames = BlogPost.model_fields.keys()
-
-    with open(filename, mode="w", newline="", encoding="utf-8") as file:
+    
+    # Check if the file exists and we should append
+    file_exists = os.path.exists(filename)
+    
+    mode = "a" if append and file_exists else "w"
+    
+    with open(filename, mode=mode, newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
-        writer.writeheader()
+        
+        # Only write header if creating a new file or not appending
+        if not append or not file_exists:
+            writer.writeheader()
+            
         writer.writerows(posts)
-    print(f"Saved {len(posts)} blog posts to '{filename}'.")
+    
+    print(f"{'Appended' if append and file_exists else 'Saved'} {len(posts)} blog posts to '{filename}'.")

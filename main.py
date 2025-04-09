@@ -1,6 +1,8 @@
 import asyncio
 import argparse
 import time
+import os
+import csv
 
 from crawl4ai import AsyncWebCrawler
 from dotenv import load_dotenv
@@ -18,14 +20,48 @@ from utils.scraper_utils import (
 load_dotenv()
 
 
-async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5):
+def load_existing_posts(csv_filename: str) -> set:
+    """
+    Load already scraped posts from the CSV file.
+    
+    Args:
+        csv_filename (str): Path to the CSV file
+        
+    Returns:
+        set: Set of links that have already been scraped
+    """
+    scraped_links = set()
+    
+    if not os.path.exists(csv_filename):
+        print(f"No existing CSV file found at {csv_filename}")
+        return scraped_links
+        
+    try:
+        with open(csv_filename, mode='r', encoding='utf-8') as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                if 'link' in row and row['link']:
+                    scraped_links.add(row['link'])
+                    
+        print(f"Loaded {len(scraped_links)} already scraped posts from {csv_filename}")
+    except Exception as e:
+        print(f"Error loading existing posts: {str(e)}")
+        
+    return scraped_links
+
+
+async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_filename: str = "upguard_blog_posts.csv"):
     """
     Main function to crawl blog post data from the UpGuard blog.
     
     Args:
         max_posts (int): Maximum number of blog posts to crawl
         delay_seconds (int): Delay between API calls to avoid rate limits
+        csv_filename (str): Path to the CSV file to save posts
     """
+    # Load already scraped posts
+    already_scraped_links = load_existing_posts(csv_filename)
+    
     # Initialize configurations
     browser_config = get_browser_config()
     session_id = "blog_post_crawl_session"
@@ -35,6 +71,7 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5):
     seen_titles = set()
     successful_posts = 0
     failed_posts = 0
+    skipped_posts = 0
 
     print(f"Starting blog crawler. Will scrape up to {max_posts} posts with {delay_seconds}s delay between requests.")
 
@@ -48,7 +85,8 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5):
                 print("No blog post links found on the main page.")
                 return
                 
-            print(f"Found {len(links)} blog post links. Will scrape up to {max_posts} posts.")
+            total_new_posts = sum(1 for link_data in links if link_data.get("link") and link_data["link"] not in already_scraped_links)
+            print(f"Found {len(links)} blog post links. {total_new_posts} are new. Will scrape up to {max_posts} posts.")
             
             # Step 2: Visit each link and scrape the full blog post content
             for i, link_data in enumerate(links):
@@ -64,7 +102,13 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5):
                     print(f"Skipping post with missing link: {title}")
                     continue
                     
-                # Skip duplicates
+                # Skip already scraped posts
+                if link in already_scraped_links:
+                    print(f"Skipping already scraped post: {title}")
+                    skipped_posts += 1
+                    continue
+                    
+                # Skip duplicates within current run
                 if title in seen_titles:
                     print(f"Skipping duplicate post: {title}")
                     continue
@@ -84,9 +128,11 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5):
                     print(f"Successfully scraped post {successful_posts}/{max_posts}: {title}")
                     
                     # Save after each successful post to preserve progress
-                    if successful_posts % 2 == 0:
-                        save_posts_to_csv(all_posts, "upguard_blog_posts.csv")
-                        print(f"Saved {len(all_posts)} blog posts to 'upguard_blog_posts.csv' (intermediate save)")
+                    if successful_posts % 2 == 0 or successful_posts == max_posts:
+                        save_posts_to_csv(all_posts, csv_filename, append=True)
+                        print(f"Saved {len(all_posts)} blog posts to '{csv_filename}' (intermediate save)")
+                        # Clear the list since we've saved them
+                        all_posts = []
                 else:
                     failed_posts += 1
                     print(f"Failed to scrape post or missing required data: {title}")
@@ -95,16 +141,15 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5):
             print(f"Error during crawling: {str(e)}")
             # Save what we have so far
             if all_posts:
-                save_posts_to_csv(all_posts, "upguard_blog_posts.csv")
-                print(f"Saved {len(all_posts)} blog posts to 'upguard_blog_posts.csv' after error.")
+                save_posts_to_csv(all_posts, csv_filename, append=True)
+                print(f"Saved {len(all_posts)} blog posts to '{csv_filename}' after error.")
 
-    # Final save of the collected posts to a CSV file
+    # Final save of any remaining posts
     if all_posts:
-        save_posts_to_csv(all_posts, "upguard_blog_posts.csv")
-        print(f"Saved {len(all_posts)} blog posts to 'upguard_blog_posts.csv'.")
-        print(f"Summary: {successful_posts} posts successfully scraped, {failed_posts} posts failed.")
-    else:
-        print("No blog posts were found during the crawl.")
+        save_posts_to_csv(all_posts, csv_filename, append=True)
+        print(f"Saved {len(all_posts)} blog posts to '{csv_filename}'.")
+        
+    print(f"Summary: {successful_posts} posts successfully scraped, {skipped_posts} posts skipped (already scraped), {failed_posts} posts failed.")
 
 
 async def main():
@@ -115,6 +160,7 @@ async def main():
     parser = argparse.ArgumentParser(description='Scrape blog posts from UpGuard blog')
     parser.add_argument('--max-posts', type=int, default=10, help='Maximum number of posts to scrape (default: 10)')
     parser.add_argument('--delay', type=int, default=5, help='Delay between requests in seconds (default: 5)')
+    parser.add_argument('--output', type=str, default='upguard_blog_posts.csv', help='Output CSV file (default: upguard_blog_posts.csv)')
     
     # Parse args only if running from command line
     import sys
@@ -122,12 +168,14 @@ async def main():
         args = parser.parse_args()
         max_posts = args.max_posts
         delay = args.delay
+        csv_filename = args.output
     else:
         # Default values when run without arguments
         max_posts = 10
         delay = 5
+        csv_filename = 'upguard_blog_posts.csv'
         
-    await crawl_blog_posts(max_posts=max_posts, delay_seconds=delay)
+    await crawl_blog_posts(max_posts=max_posts, delay_seconds=delay, csv_filename=csv_filename)
 
 
 if __name__ == "__main__":
