@@ -107,6 +107,106 @@ def extract_main_content(html_content: str, max_chars: int = 8000) -> str:
     return f"{title}\n\n{content}"
 
 
+def extract_blog_post_content(html_content: str, url: str) -> Dict[str, str]:
+    """
+    Extracts blog post content using direct HTML parsing instead of relying on LLM.
+    
+    Args:
+        html_content (str): The HTML content of the blog post
+        url (str): The URL of the blog post
+        
+    Returns:
+        Dict[str, str]: Dictionary with title, body, and link
+    """
+    # Extract title
+    title_patterns = [
+        r'<h1[^>]*>(.*?)</h1>',
+        r'<title[^>]*>(.*?)</title>',
+        r'<meta\s+property="og:title"\s+content="([^"]+)"'
+    ]
+    
+    title = "Untitled Blog Post"
+    for pattern in title_patterns:
+        matches = re.search(pattern, html_content, re.DOTALL)
+        if matches:
+            title_text = matches.group(1)
+            # Clean up HTML tags
+            title = re.sub(r'<[^>]+>', '', title_text).strip()
+            if title and len(title) > 5:
+                break
+    
+    # Extract content paragraphs
+    paragraph_patterns = [
+        r'<div[^>]*class="[^"]*blog-content[^"]*"[^>]*>(.*?)</div>',
+        r'<div[^>]*class="[^"]*post-content[^"]*"[^>]*>(.*?)</div>',
+        r'<article[^>]*>(.*?)</article>',
+        r'<div[^>]*class="[^"]*content[^"]*"[^>]*>(.*?)</div>'
+    ]
+    
+    content = ""
+    for pattern in paragraph_patterns:
+        matches = re.search(pattern, html_content, re.DOTALL)
+        if matches:
+            content_html = matches.group(1)
+            
+            # Extract paragraphs from the content
+            paragraphs = re.findall(r'<p[^>]*>(.*?)</p>', content_html, re.DOTALL)
+            if paragraphs:
+                # Clean up paragraphs and join them
+                cleaned_paragraphs = []
+                for p in paragraphs[:5]:  # Take first 5 paragraphs at most
+                    p_text = re.sub(r'<[^>]+>', ' ', p).strip()
+                    p_text = re.sub(r'\s+', ' ', p_text)
+                    if len(p_text) > 20:  # Ignore very short paragraphs
+                        cleaned_paragraphs.append(p_text)
+                
+                if cleaned_paragraphs:
+                    content = " ".join(cleaned_paragraphs)
+                    break
+    
+    # If we couldn't find paragraphs, try a more general approach
+    if not content:
+        # Remove script and style elements
+        html_content = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.DOTALL)
+        html_content = re.sub(r'<style[^>]*>.*?</style>', '', html_content, flags=re.DOTALL)
+        
+        # Try to find any paragraph content
+        paragraphs = re.findall(r'<p[^>]*>(.*?)</p>', html_content, re.DOTALL)
+        if paragraphs:
+            cleaned_paragraphs = []
+            for p in paragraphs[:5]:
+                p_text = re.sub(r'<[^>]+>', ' ', p).strip()
+                p_text = re.sub(r'\s+', ' ', p_text)
+                if len(p_text) > 20:
+                    cleaned_paragraphs.append(p_text)
+            
+            if cleaned_paragraphs:
+                content = " ".join(cleaned_paragraphs)
+    
+    # If still no content, take a general approach
+    if not content:
+        # Strip all HTML tags and take a portion
+        stripped_content = re.sub(r'<[^>]+>', ' ', html_content)
+        stripped_content = re.sub(r'\s+', ' ', stripped_content).strip()
+        
+        # Find a chunk of text that seems like content (not navigation/headers/footers)
+        chunks = stripped_content.split('   ')
+        for chunk in chunks:
+            if len(chunk) > 200:  # Reasonable chunk size for content
+                content = chunk[:1000] + "..."  # Limit content length
+                break
+    
+    # Final fallback
+    if not content:
+        content = "Could not extract blog post content."
+    
+    return {
+        "title": title,
+        "body": content,
+        "link": url
+    }
+
+
 async def extract_blog_post_links(
     crawler: AsyncWebCrawler,
     url: str,
@@ -198,7 +298,7 @@ async def scrape_blog_post(
     print(f"Scraping blog post: {title} at {url}")
     
     try:
-        # First fetch the page without extraction strategy to get content
+        # Fetch the page without any extraction strategy
         result = await crawler.arun(
             url=url,
             config=CrawlerRunConfig(
@@ -211,37 +311,16 @@ async def scrape_blog_post(
             print(f"Error fetching blog post page: {result.error_message}")
             return fallback_post(title, url)
             
-        # Extract and preprocess main content to reduce size
-        main_content = extract_main_content(result.cleaned_html)
+        # Use direct HTML parsing to extract content instead of LLM
+        post_data = extract_blog_post_content(result.cleaned_html, url)
         
-        # Create a more targeted config for content extraction
-        content_strategy = get_content_extraction_strategy()
-        
-        # Extract content from the preprocessed HTML
-        result = await crawler.process_content(
-            content=main_content,
-            url=url,
-            config=CrawlerRunConfig(
-                extraction_strategy=content_strategy,
-                session_id=session_id,
-            )
-        )
-        
-        if not (result.success and result.extracted_content):
-            print(f"Error extracting content: {result.error_message}")
-            return fallback_post(title, url, content_snippet=main_content[:500])
-            
-        # Parse extracted content
-        post_data = json.loads(result.extracted_content)
-        
-        # In case the title wasn't extracted properly, use the one from the link
-        if not post_data.get("title"):
+        # If the title wasn't extracted properly, use the one from the link
+        if not post_data.get("title") or post_data["title"] == "Untitled Blog Post":
             post_data["title"] = title
-                
-        # Make sure the link is included
-        if not post_data.get("link"):
-            post_data["link"] = url
-                
+        
+        print(f"Successfully extracted content for: {post_data['title']}")
+        print(f"Content preview: {post_data['body'][:100]}...")
+            
         return post_data
     except Exception as e:
         print(f"Error when scraping blog post {title}: {str(e)}")
