@@ -1,15 +1,11 @@
 from pydantic import BaseModel
 
 
-class Venue(BaseModel):
+class BlogPost(BaseModel):
     """
-    Represents the data structure of a Venue.
+    Represents the data structure of a blog post.
     """
 
-    name: str
-    location: str
-    price: str
-    capacity: str
-    rating: float
-    reviews: int
-    description: str
+    title: str
+    body: str
+    link: str
