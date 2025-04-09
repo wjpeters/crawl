@@ -71,6 +71,8 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_file
     # Initialize state variables
     all_posts = []
     seen_titles = set()
+    seen_links = set()
+    processed_posts = 0  # Total posts processed (both new and refreshed)
     successful_posts = 0
     failed_posts = 0
     skipped_posts = 0
@@ -98,8 +100,8 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_file
             # Step 2: Visit each link and scrape the full blog post content
             for i, link_data in enumerate(links):
                 # Stop after reaching the maximum number of posts
-                if successful_posts >= max_posts:
-                    print(f"Reached the maximum of {max_posts} blog posts. Stopping.")
+                if processed_posts >= max_posts:
+                    print(f"Reached the maximum of {max_posts} posts processed. Stopping.")
                     break
                     
                 title = link_data.get("title", "Unknown Title")
@@ -109,20 +111,22 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_file
                     print(f"Skipping post with missing link: {title}")
                     continue
                     
+                # Skip duplicates within current run
+                if link in seen_links:
+                    print(f"Skipping duplicate link in this run: {title}")
+                    continue
+                
+                seen_links.add(link)
+                
                 # For already scraped posts, decide randomly whether to refresh them
                 if link in already_scraped_links:
                     if random.random() < random_factor:
                         print(f"Randomly selected to refresh already scraped post: {title}")
-                        refreshed_posts += 1
+                        # Continue with refreshing this post
                     else:
                         print(f"Skipping already scraped post: {title}")
                         skipped_posts += 1
                         continue
-                    
-                # Skip duplicates within current run
-                if title in seen_titles:
-                    print(f"Skipping duplicate post: {title}")
-                    continue
                 
                 # Delay between requests to avoid rate limits
                 if i > 0:
@@ -134,14 +138,20 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_file
                 # Scrape the individual blog post
                 post_data = await scrape_blog_post(crawler, link, title, session_id)
                 
+                # Increment the processed counter regardless of success
+                processed_posts += 1
+                
                 if post_data and all(key in post_data for key in REQUIRED_KEYS):
                     all_posts.append(post_data)
-                    seen_titles.add(title)
-                    successful_posts += 1
-                    print(f"Successfully scraped post {successful_posts}/{max_posts}: {title}")
+                    if link in already_scraped_links:
+                        refreshed_posts += 1
+                        print(f"Successfully refreshed post {processed_posts}/{max_posts}: {title}")
+                    else:
+                        successful_posts += 1
+                        print(f"Successfully scraped new post {processed_posts}/{max_posts}: {title}")
                     
                     # Save after each successful post to preserve progress
-                    if successful_posts % 2 == 0 or successful_posts == max_posts:
+                    if len(all_posts) >= 2 or processed_posts >= max_posts:
                         save_posts_to_csv(all_posts, csv_filename, append=True)
                         print(f"Saved {len(all_posts)} blog posts to '{csv_filename}' (intermediate save)")
                         # Clear the list since we've saved them
@@ -149,6 +159,9 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_file
                 else:
                     failed_posts += 1
                     print(f"Failed to scrape post or missing required data: {title}")
+                    
+                # Debug output to track progress
+                print(f"Progress: {processed_posts}/{max_posts} posts processed ({successful_posts} new, {refreshed_posts} refreshed, {failed_posts} failed)")
         
         except Exception as e:
             print(f"Error during crawling: {str(e)}")
@@ -162,7 +175,7 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_file
         save_posts_to_csv(all_posts, csv_filename, append=True)
         print(f"Saved {len(all_posts)} blog posts to '{csv_filename}'.")
         
-    print(f"Summary: {successful_posts} posts successfully scraped ({refreshed_posts} refreshed), {skipped_posts} posts skipped, {failed_posts} posts failed.")
+    print(f"Summary: Processed {processed_posts} posts - {successful_posts} new posts successfully scraped, {refreshed_posts} posts refreshed, {skipped_posts} posts skipped, {failed_posts} posts failed.")
 
 
 async def main():
