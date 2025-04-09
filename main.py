@@ -3,6 +3,7 @@ import argparse
 import time
 import os
 import csv
+import random
 
 from crawl4ai import AsyncWebCrawler
 from dotenv import load_dotenv
@@ -50,7 +51,7 @@ def load_existing_posts(csv_filename: str) -> set:
     return scraped_links
 
 
-async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_filename: str = "upguard_blog_posts.csv"):
+async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_filename: str = "upguard_blog_posts.csv", random_factor: float = 0.3):
     """
     Main function to crawl blog post data from the UpGuard blog.
     
@@ -58,6 +59,7 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_file
         max_posts (int): Maximum number of blog posts to crawl
         delay_seconds (int): Delay between API calls to avoid rate limits
         csv_filename (str): Path to the CSV file to save posts
+        random_factor (float): Probability (0-1) of selecting an already scraped post to refresh
     """
     # Load already scraped posts
     already_scraped_links = load_existing_posts(csv_filename)
@@ -72,8 +74,10 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_file
     successful_posts = 0
     failed_posts = 0
     skipped_posts = 0
+    refreshed_posts = 0
 
     print(f"Starting blog crawler. Will scrape up to {max_posts} posts with {delay_seconds}s delay between requests.")
+    print(f"Random factor: {random_factor:.2f} - Approximately {int(random_factor*100)}% chance to refresh already scraped posts")
 
     # Start the web crawler context
     async with AsyncWebCrawler(config=browser_config) as crawler:
@@ -87,6 +91,9 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_file
                 
             total_new_posts = sum(1 for link_data in links if link_data.get("link") and link_data["link"] not in already_scraped_links)
             print(f"Found {len(links)} blog post links. {total_new_posts} are new. Will scrape up to {max_posts} posts.")
+            
+            # Shuffle the links to get random selection
+            random.shuffle(links)
             
             # Step 2: Visit each link and scrape the full blog post content
             for i, link_data in enumerate(links):
@@ -102,11 +109,15 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_file
                     print(f"Skipping post with missing link: {title}")
                     continue
                     
-                # Skip already scraped posts
+                # For already scraped posts, decide randomly whether to refresh them
                 if link in already_scraped_links:
-                    print(f"Skipping already scraped post: {title}")
-                    skipped_posts += 1
-                    continue
+                    if random.random() < random_factor:
+                        print(f"Randomly selected to refresh already scraped post: {title}")
+                        refreshed_posts += 1
+                    else:
+                        print(f"Skipping already scraped post: {title}")
+                        skipped_posts += 1
+                        continue
                     
                 # Skip duplicates within current run
                 if title in seen_titles:
@@ -115,8 +126,10 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_file
                 
                 # Delay between requests to avoid rate limits
                 if i > 0:
-                    print(f"Waiting {delay_seconds} seconds before next request...")
-                    await asyncio.sleep(delay_seconds)
+                    # Add slight randomness to delay to appear more natural
+                    current_delay = delay_seconds * (0.8 + 0.4 * random.random())
+                    print(f"Waiting {current_delay:.1f} seconds before next request...")
+                    await asyncio.sleep(current_delay)
                     
                 # Scrape the individual blog post
                 post_data = await scrape_blog_post(crawler, link, title, session_id)
@@ -149,7 +162,7 @@ async def crawl_blog_posts(max_posts: int = 10, delay_seconds: int = 5, csv_file
         save_posts_to_csv(all_posts, csv_filename, append=True)
         print(f"Saved {len(all_posts)} blog posts to '{csv_filename}'.")
         
-    print(f"Summary: {successful_posts} posts successfully scraped, {skipped_posts} posts skipped (already scraped), {failed_posts} posts failed.")
+    print(f"Summary: {successful_posts} posts successfully scraped ({refreshed_posts} refreshed), {skipped_posts} posts skipped, {failed_posts} posts failed.")
 
 
 async def main():
@@ -161,6 +174,7 @@ async def main():
     parser.add_argument('--max-posts', type=int, default=10, help='Maximum number of posts to scrape (default: 10)')
     parser.add_argument('--delay', type=int, default=5, help='Delay between requests in seconds (default: 5)')
     parser.add_argument('--output', type=str, default='upguard_blog_posts.csv', help='Output CSV file (default: upguard_blog_posts.csv)')
+    parser.add_argument('--random', type=float, default=0.3, help='Random factor for refreshing already scraped posts (0-1, default: 0.3)')
     
     # Parse args only if running from command line
     import sys
@@ -169,13 +183,15 @@ async def main():
         max_posts = args.max_posts
         delay = args.delay
         csv_filename = args.output
+        random_factor = min(max(args.random, 0.0), 1.0)  # Clamp between 0 and 1
     else:
         # Default values when run without arguments
         max_posts = 10
         delay = 5
         csv_filename = 'upguard_blog_posts.csv'
+        random_factor = 0.3
         
-    await crawl_blog_posts(max_posts=max_posts, delay_seconds=delay, csv_filename=csv_filename)
+    await crawl_blog_posts(max_posts=max_posts, delay_seconds=delay, csv_filename=csv_filename, random_factor=random_factor)
 
 
 if __name__ == "__main__":

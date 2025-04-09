@@ -1,5 +1,7 @@
 import csv
 import os
+import tempfile
+import shutil
 
 from models.venue import BlogPost
 
@@ -51,15 +53,51 @@ def save_posts_to_csv(posts: list, filename: str, append: bool = False):
     # Check if the file exists and we should append
     file_exists = os.path.exists(filename)
     
-    mode = "a" if append and file_exists else "w"
-    
-    with open(filename, mode=mode, newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
-        
-        # Only write header if creating a new file or not appending
-        if not append or not file_exists:
+    # If not appending or file doesn't exist, just write directly
+    if not append or not file_exists:
+        with open(filename, mode="w", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=fieldnames)
             writer.writeheader()
-            
-        writer.writerows(posts)
+            writer.writerows(posts)
+        print(f"Saved {len(posts)} blog posts to '{filename}'.")
+        return
     
-    print(f"{'Appended' if append and file_exists else 'Saved'} {len(posts)} blog posts to '{filename}'.")
+    # Handle appending with deduplication
+    # Load existing posts and track by link
+    existing_posts = {}
+    try:
+        with open(filename, mode='r', encoding='utf-8') as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                if 'link' in row and row['link']:
+                    existing_posts[row['link']] = row
+    except Exception as e:
+        print(f"Error reading existing posts: {str(e)}")
+        # Fall back to simple append if there's an error
+        with open(filename, mode="a", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=fieldnames)
+            writer.writerows(posts)
+        print(f"Appended {len(posts)} blog posts to '{filename}'.")
+        return
+    
+    # Process new posts - update existing entries or add new ones
+    updated_count = 0
+    added_count = 0
+    
+    for post in posts:
+        if post.get('link') in existing_posts:
+            # Update the existing entry
+            existing_posts[post['link']] = post
+            updated_count += 1
+        else:
+            # Add new entry
+            existing_posts[post['link']] = post
+            added_count += 1
+    
+    # Write back all posts
+    with open(filename, mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(existing_posts.values())
+    
+    print(f"Updated CSV file '{filename}': {added_count} posts added, {updated_count} posts updated.")
